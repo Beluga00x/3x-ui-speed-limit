@@ -11,6 +11,14 @@ cur_dir=$(pwd)
 xui_folder="${XUI_MAIN_FOLDER:=/usr/local/x-ui}"
 xui_service="${XUI_SERVICE:=/etc/systemd/system}"
 
+# Fork/source-build defaults. This fork installs the upstream release bundle for
+# bundled resources (xray/mtg/service files), then overwrites the panel binary
+# with a build from this repository so local custom changes are active.
+xui_source_repo="${XUI_SOURCE_REPO:=https://github.com/Beluga00x/3x-ui-speed-limit.git}"
+xui_source_branch="${XUI_SOURCE_BRANCH:=main}"
+xui_raw_base="${XUI_RAW_BASE:=https://raw.githubusercontent.com/Beluga00x/3x-ui-speed-limit/main}"
+xui_install_from_source="${XUI_INSTALL_FROM_SOURCE:=1}"
+
 # check root
 [[ $EUID -ne 0 ]] && echo -e "${red}Fatal error: ${plain} Please run this script with root privilege \n " && exit 1
 
@@ -1326,6 +1334,85 @@ setup_fail2ban() {
     return 0
 }
 
+install_source_build_deps() {
+    case "${release}" in
+        ubuntu | debian | armbian)
+            apt-get update && apt-get install -y -q git curl ca-certificates build-essential golang-go
+            local node_major="0"
+            if command -v node > /dev/null 2>&1; then
+                node_major=$(node -v | sed -E 's/^v([0-9]+).*/\1/')
+            fi
+            if [[ -z "$node_major" || "$node_major" -lt 22 ]]; then
+                curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+                apt-get install -y -q nodejs
+            fi
+            ;;
+        fedora | amzn | virtuozzo | rhel | almalinux | rocky | ol)
+            dnf install -y -q git curl ca-certificates gcc gcc-c++ make golang nodejs npm
+            ;;
+        centos)
+            if [[ "${VERSION_ID}" =~ ^7 ]]; then
+                yum install -y git curl ca-certificates gcc gcc-c++ make golang nodejs npm
+            else
+                dnf install -y -q git curl ca-certificates gcc gcc-c++ make golang nodejs npm
+            fi
+            ;;
+        arch | manjaro | parch)
+            pacman -Syu --noconfirm git curl base-devel go nodejs npm
+            ;;
+        opensuse-tumbleweed | opensuse-leap)
+            zypper -q install -y git curl ca-certificates gcc gcc-c++ make go nodejs npm
+            ;;
+        alpine)
+            apk add --no-cache git curl ca-certificates build-base go nodejs npm
+            ;;
+        *)
+            apt-get update && apt-get install -y -q git curl ca-certificates build-essential golang-go nodejs npm
+            ;;
+    esac
+}
+
+build_xui_from_source() {
+    if [[ "${xui_install_from_source}" != "1" && "${xui_install_from_source}" != "true" ]]; then
+        return 0
+    fi
+
+    echo -e "${yellow}Building custom x-ui from ${xui_source_repo} (${xui_source_branch})...${plain}"
+    install_source_build_deps || {
+        echo -e "${red}Failed to install source build dependencies.${plain}"
+        exit 1
+    }
+
+    local build_dir
+    build_dir=$(mktemp -d /tmp/x-ui-build.XXXXXX)
+    git clone --depth 1 --branch "${xui_source_branch}" "${xui_source_repo}" "${build_dir}" || {
+        rm -rf "${build_dir}"
+        echo -e "${red}Failed to clone ${xui_source_repo}.${plain}"
+        exit 1
+    }
+
+    (cd "${build_dir}/frontend" && npm install && npm run build) || {
+        rm -rf "${build_dir}"
+        echo -e "${red}Frontend build failed.${plain}"
+        exit 1
+    }
+
+    (cd "${build_dir}" && GOTOOLCHAIN=auto go build -o x-ui-custom main.go) || {
+        rm -rf "${build_dir}"
+        echo -e "${red}Backend build failed.${plain}"
+        exit 1
+    }
+
+    cp -f "${build_dir}/x-ui-custom" ./x-ui || {
+        rm -rf "${build_dir}"
+        echo -e "${red}Failed to install custom x-ui binary.${plain}"
+        exit 1
+    }
+    chmod +x ./x-ui
+    rm -rf "${build_dir}"
+    echo -e "${green}Custom x-ui binary built and installed into release bundle.${plain}"
+}
+
 install_x-ui() {
     cd ${xui_folder%/x-ui}/
 
@@ -1368,7 +1455,7 @@ install_x-ui() {
             exit 1
         fi
     fi
-    curl -fLRo /usr/bin/x-ui-temp https://raw.githubusercontent.com/MHSanaei/3x-ui/main/x-ui.sh
+    curl -fLRo /usr/bin/x-ui-temp ${xui_raw_base}/x-ui.sh
     if [[ $? -ne 0 ]]; then
         echo -e "${red}Failed to download x-ui.sh${plain}"
         exit 1
@@ -1394,6 +1481,7 @@ install_x-ui() {
     rm x-ui-linux-$(arch).tar.gz -f
 
     cd x-ui
+    build_xui_from_source
     chmod +x x-ui
     chmod +x x-ui.sh
 
@@ -1434,7 +1522,7 @@ install_x-ui() {
     fi
 
     if [[ $release == "alpine" ]]; then
-        curl -fLRo /etc/init.d/x-ui https://raw.githubusercontent.com/MHSanaei/3x-ui/main/x-ui.rc
+        curl -fLRo /etc/init.d/x-ui ${xui_raw_base}/x-ui.rc
         if [[ $? -ne 0 ]]; then
             echo -e "${red}Failed to download x-ui.rc${plain}"
             exit 1
@@ -1491,13 +1579,13 @@ install_x-ui() {
             echo -e "${yellow}Service files not found in tar.gz, downloading from GitHub...${plain}"
             case "${release}" in
                 ubuntu | debian | armbian)
-                    curl -fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/MHSanaei/3x-ui/main/x-ui.service.debian > /dev/null 2>&1
+                    curl -fLRo ${xui_service}/x-ui.service ${xui_raw_base}/x-ui.service.debian > /dev/null 2>&1
                     ;;
                 arch | manjaro | parch)
-                    curl -fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/MHSanaei/3x-ui/main/x-ui.service.arch > /dev/null 2>&1
+                    curl -fLRo ${xui_service}/x-ui.service ${xui_raw_base}/x-ui.service.arch > /dev/null 2>&1
                     ;;
                 *)
-                    curl -fLRo ${xui_service}/x-ui.service https://raw.githubusercontent.com/MHSanaei/3x-ui/main/x-ui.service.rhel > /dev/null 2>&1
+                    curl -fLRo ${xui_service}/x-ui.service ${xui_raw_base}/x-ui.service.rhel > /dev/null 2>&1
                     ;;
             esac
 
