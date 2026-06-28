@@ -14,6 +14,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/database"
 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
 	"github.com/mhsanaei/3x-ui/v3/internal/logger"
+	"github.com/mhsanaei/3x-ui/v3/internal/tc"
 	"github.com/mhsanaei/3x-ui/v3/internal/web/service"
 	"github.com/mhsanaei/3x-ui/v3/internal/xray"
 
@@ -24,6 +25,21 @@ import (
 type IPWithTimestamp struct {
 	IP        string `json:"ip"`
 	Timestamp int64  `json:"timestamp"`
+}
+
+func applyObservedClientTCLimit(client model.Client, ips []IPWithTimestamp) {
+	if client.Email == "" || (client.UploadSpeedLimit <= 0 && client.DownloadSpeedLimit <= 0) {
+		return
+	}
+	rawIPs := make([]string, 0, len(ips))
+	for _, entry := range ips {
+		if entry.IP != "" {
+			rawIPs = append(rawIPs, entry.IP)
+		}
+	}
+	if err := tc.ApplyClientLimitForCIDRs(client, rawIPs); err != nil {
+		logger.Warningf("[TC] apply observed client speed limit for %q failed: %v", client.Email, err)
+	}
 }
 
 // CheckClientIpJob monitors client IP addresses and manages IP blocking based
@@ -349,12 +365,14 @@ func (j *CheckClientIpJob) updateInboundClientIps(inboundClientIps *model.Inboun
 	_ = json.Unmarshal([]byte(inbound.Settings), &settings)
 	clients := settings["clients"]
 
-	// Find the client's IP limit
+	// Find the client's IP/speed limits.
 	var limitIp int
+	var limitClient model.Client
 	var clientFound bool
 	for _, client := range clients {
 		if client.Email == clientEmail {
 			limitIp = client.LimitIP
+			limitClient = client
 			clientFound = true
 			break
 		}
@@ -367,6 +385,7 @@ func (j *CheckClientIpJob) updateInboundClientIps(inboundClientIps *model.Inboun
 		inboundClientIps.Ips = string(jsonIps)
 		db := database.GetDB()
 		db.Save(inboundClientIps)
+		applyObservedClientTCLimit(limitClient, newIpsWithTime)
 		return false
 	}
 
@@ -430,6 +449,8 @@ func (j *CheckClientIpJob) updateInboundClientIps(inboundClientIps *model.Inboun
 		logger.Error("failed to save inboundClientIps:", err)
 		return false
 	}
+
+	applyObservedClientTCLimit(limitClient, dbIps)
 
 	if len(j.disAllowedIps) > 0 {
 		logger.Infof("[LIMIT_IP] Client %s: Kept %d live IPs, queued %d old IPs for fail2ban", clientEmail, len(keptLive), len(j.disAllowedIps))

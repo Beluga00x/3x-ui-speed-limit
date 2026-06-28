@@ -25,11 +25,15 @@ const commandTimeout = 2 * time.Second
 // cannot distinguish them by email/UUID without an external packet-marking path;
 // those clients are persisted but skipped here.
 func ApplyClientLimit(client model.Client) error {
+	return ApplyClientLimitForCIDRs(client, nil)
+}
+
+func ApplyClientLimitForCIDRs(client model.Client, extraCIDRs []string) error {
 	if client.UploadSpeedLimit <= 0 && client.DownloadSpeedLimit <= 0 {
 		return RemoveClientLimitByEmail(client.Email)
 	}
 
-	cidrs := clientCIDRs(client)
+	cidrs := clientCIDRs(client, extraCIDRs)
 	if len(cidrs) == 0 {
 		logger.Debugf("[TC] skip client %q: no classifiable client IPs", client.Email)
 		return nil
@@ -108,10 +112,12 @@ func clearClientFilters(iface string, minor uint32) error {
 	return errors.Join(errs...)
 }
 
-func clientCIDRs(client model.Client) []string {
+func clientCIDRs(client model.Client, extraCIDRs []string) []string {
 	seen := map[string]struct{}{}
-	out := make([]string, 0, len(client.AllowedIPs))
-	for _, raw := range client.AllowedIPs {
+	raws := append([]string{}, client.AllowedIPs...)
+	raws = append(raws, extraCIDRs...)
+	out := make([]string, 0, len(raws))
+	for _, raw := range raws {
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
 			continue
