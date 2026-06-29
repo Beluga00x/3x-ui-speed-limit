@@ -100,16 +100,27 @@ func clearClientFilters(iface string, minor uint32) error {
 	var errs []error
 	prio := fmt.Sprint(minor)
 	classID := fmt.Sprintf("1:%x", minor)
-	if err := run("tc", "filter", "delete", "dev", iface, "parent", "1:", "prio", prio); err != nil {
+	if err := run("tc", "filter", "delete", "dev", iface, "parent", "1:", "prio", prio); err != nil && !isTCMissingError(err) {
 		errs = append(errs, err)
 	}
-	if err := run("tc", "filter", "delete", "dev", iface, "parent", "ffff:", "prio", prio); err != nil {
+	if err := run("tc", "filter", "delete", "dev", iface, "parent", "ffff:", "prio", prio); err != nil && !isTCMissingError(err) {
 		errs = append(errs, err)
 	}
-	if err := run("tc", "class", "delete", "dev", iface, "classid", classID); err != nil {
+	if err := run("tc", "class", "delete", "dev", iface, "classid", classID); err != nil && !isTCMissingError(err) {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+func isTCMissingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not found") ||
+		strings.Contains(s, "cannot find") ||
+		strings.Contains(s, "no such file") ||
+		strings.Contains(s, "invalid argument")
 }
 
 func clientCIDRs(client model.Client, extraCIDRs []string) []string {
