@@ -90,7 +90,11 @@ func RemoveClientLimitByEmail(email string) error {
 }
 
 func ensureRootQdisc(iface string) error {
-	if err := run("tc", "qdisc", "replace", "dev", iface, "root", "handle", "1:", "htb", "default", "1"); err != nil {
+	// Do not use `qdisc replace` here: some kernels/drivers reject changing an
+	// existing root qdisc with "Change operation not supported by specified qdisc".
+	// Adding once and ignoring "already exists" is enough; classes/filters below
+	// are idempotently replaced.
+	if err := run("tc", "qdisc", "add", "dev", iface, "root", "handle", "1:", "htb", "default", "1"); err != nil && !isTCExistsError(err) {
 		return err
 	}
 	return run("tc", "class", "replace", "dev", iface, "parent", "1:", "classid", "1:1", "htb", "rate", "10000mbit", "ceil", "10000mbit")
@@ -121,6 +125,16 @@ func isTCMissingError(err error) bool {
 		strings.Contains(s, "cannot find") ||
 		strings.Contains(s, "no such file") ||
 		strings.Contains(s, "invalid argument")
+}
+
+func isTCExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "file exists") ||
+		strings.Contains(s, "exclusivity flag on") ||
+		strings.Contains(s, "already exists")
 }
 
 func clientCIDRs(client model.Client, extraCIDRs []string) []string {
